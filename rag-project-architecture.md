@@ -6,8 +6,8 @@ This document describes the architecture of a role-based, production-style Retri
 
 Two user roles exist:
 
-- **Admin** — can upload documents into the RAG pipeline and can query the assistant.
-- **Staff** — can only query the assistant; cannot upload documents.
+- **Admin** — can upload documents into the RAG pipeline, remove/delete a document or an entire knowledge base from it, and can query the assistant.
+- **Staff** — can only query the assistant; cannot upload or delete documents.
 
 Role authorization is enforced deterministically in the backend (FastAPI + database), never left to the LLM to decide.
 
@@ -33,14 +33,17 @@ Vector database for the dense/semantic side of hybrid search. Stores document em
 ### Reranker (Jina Reranker API — free tier)
 Re-scores the merged candidate set from Pinecone (dense) and BM25 (lexical) to produce the final, most relevant context passed to the LLM. Chosen over a self-hosted reranker (e.g., BAAI/bge-reranker-v2-m3) because running a cross-encoder model locally would consume too much CPU/RAM on the free-tier deployment host. The Jina free tier offers a fixed pool of free tokens, rate limits, and a dedicated rerank endpoint, and requires no separate deployment.
 
+### Embeddings (Jina Embeddings API — free tier)
+Turns document chunks (at ingestion) and user queries (at retrieval) into the dense vectors stored in and queried against Pinecone. Uses the same Jina account/API key as the reranker, so no separate external service is introduced for this. Chosen over a self-hosted embedding model for the same reason as the reranker — avoids consuming CPU/RAM on the free-tier deployment host — and chosen over a paid provider like OpenAI to keep the project's free-tier-first design consistent.
+
 ### NeonDB (Postgres)
 Relational data store for everything that is not vector search: users, roles/permissions, document metadata, conversation records, and LangGraph checkpoint state (conversational memory). Chosen so that persistent state does not live on the replaceable compute host running Celery.
 
 ### Celery
-Handles asynchronous background processing — primarily the document ingestion pipeline (parse → chunk → embed → upsert to Pinecone → write metadata to NeonDB) triggered when an admin uploads a document. Kept off the main request path so ingestion doesn't block API responses.
+Handles asynchronous background processing — primarily the document ingestion pipeline (parse → chunk → embed → upsert to Pinecone → write metadata to NeonDB) triggered when an admin uploads a document, and the corresponding teardown (remove vectors from Pinecone, remove entries from the BM25 index, delete metadata from NeonDB) triggered when an admin deletes a document or knowledge base. Kept off the main request path so neither ingestion nor deletion blocks API responses.
 
 ### Redis (Upstash — free tier)
-Message broker for Celery. Chosen for its free-tier allocation and standard Redis protocol compatibility, allowing it to be used as a drop-in Celery broker without hosting Redis separately.
+Message broker for Celery. Chosen for its free-tier allocation and standard Redis protocol compatibility, allowing it to be used as a drop-in Celery broker without hosting Redis separately. Also backs the application's three caching layers (embedding cache, retrieval cache, LLM response cache) — one Upstash instance serves both roles, separated by key prefix, rather than provisioning a second Redis instance.
 
 ### Docker
 Containerizes the FastAPI application and the Celery worker so both can be deployed consistently across different free-tier hosts (Render for the API, Oracle Cloud for the worker).
@@ -66,6 +69,15 @@ Dense search (Pinecone) and lexical search (BM25) are run in parallel and their 
 
 ### Reranking Strategy
 Rather than self-hosting a reranker model (which would strain the free-tier deployment's CPU/RAM), a hosted reranker API is used so the deployment footprint stays lightweight.
+
+### Caching Strategy (Upstash Redis)
+Three independent caches sit in front of the most expensive or rate-limited steps in the pipeline, all backed by the same Upstash Redis instance used as the Celery broker:
+
+- **Embedding cache** — keyed on a hash of the input text (chunk text at ingestion, query text at retrieval), caches the vector returned by the Jina Embeddings API. Avoids re-embedding identical text, which matters directly because Jina's free tier caps total tokens/month.
+- **Retrieval cache** — keyed on a hash of the query plus the active metadata filters (so one user's cached results can never leak to a user with different access permissions), caches the merged/reranked candidate set. Avoids repeating the Pinecone query, BM25 search, and Jina rerank call for a repeated or near-identical question.
+- **LLM response cache** — keyed on a hash of the query plus the retrieved context actually used, caches the final generated answer. Avoids a full LLM generation call when the same question has already been answered from the same context.
+
+Each cache is added at the exact point its underlying expensive operation is built (embedding cache alongside the embeddings client, retrieval cache alongside hybrid retrieval/reranking, LLM cache alongside generation) rather than all three being built together up front. Sharing one Upstash instance across Celery and all three caches is the simplest fit for the free tier's fixed budget (256 MB storage, 500K commands/month) — but that budget is now split across more traffic than just Celery, worth monitoring as usage grows.
 
 ### Guardrails via LangChain/LangGraph Middleware (not Guardrails AI)
 Since the project already commits to LangChain and LangGraph, their built-in middleware (before/after agent, before/after model, around tool/model calls) is used to implement query guardrails, PII detection, model/tool call limits, and output validation — rather than introducing a separate framework like Guardrails AI. Guardrails AI is left as an option only if a specific validation capability is later found missing.
@@ -114,7 +126,7 @@ Ragas answers "how good is the RAG system" through offline, dataset-driven evalu
 | Jina Reranker API | Reranking merged hybrid search candidates |
 | NeonDB (Postgres) | Users, roles, document metadata, conversations, LangGraph checkpoints |
 | Celery | Asynchronous document ingestion (parse, chunk, embed, store) |
-| Redis (Upstash) | Celery message broker |
+| Redis (Upstash) | Celery message broker; embedding/retrieval/LLM response caches |
 | Docker | Containerization of API and worker |
 | Render | Hosts the FastAPI + LangGraph API service |
 | Oracle Cloud Always Free | Hosts the Celery worker (disposable compute) |
