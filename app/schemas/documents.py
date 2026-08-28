@@ -12,3 +12,8 @@ class DocumentOut(BaseModel):
     uploaded_by: uuid.UUID
     uploaded_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class DeleteResponse(BaseModel):
+    detail: str
+    id: uuid.UUID

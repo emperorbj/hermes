@@ -27,21 +27,23 @@ We are building a **production-grade RAG (Retrieval-Augmented Generation) agent*
 - Celery worker (2 OCPU / 12 GB Ampere A1 instance)
 - Possibly Redis, though Redis is actually hosted via Upstash
 
-**Upstash Free — Celery broker**
-- Upstash Redis (256 MB storage, 500K commands/month) — standard Redis protocol, used as the Celery message broker connecting Render (API) to Oracle (worker)
+**Upstash Free — Celery broker + caching**
+- Upstash Redis (256 MB storage, 500K commands/month) — standard Redis protocol, used as the Celery message broker connecting Render (API) to Oracle (worker), and as the backing store for three caching layers: embedding cache, retrieval cache, LLM response cache (one instance, separated by key prefix)
 
 **External managed services**
 - NeonDB — relational data (auth/metadata)
 - Pinecone — vector database (dense/semantic retrieval)
 - Jina Reranker API — hosted reranking (10M free tokens, 100 RPM / 100K tokens/min / 2 concurrent)
+- Jina Embeddings API — hosted embeddings for chunks and queries (same account/key as the reranker)
 - rank_bm25 + LangChain BM25Retriever — sparse/keyword retrieval, runs in-process on Render (no separate service, no cost)
+- Groq API — LLM answer generation (free tier, OpenAI-compatible, serves open-weight models like Llama on low-latency inference hardware)
 
 **Observability & Evaluation**
 - LangSmith — per-request tracing/debugging ("what happened, and why?")
 - Ragas — offline batch evaluation of RAG quality ("how good is my system?") — metrics: faithfulness, answer relevancy, context precision, context recall, response correctness
 
 ### Request flow (conceptual)
-User → FastAPI → LangGraph → [authenticate → build metadata filter → Pinecone retrieval + BM25 retrieval → merge → Jina rerank → LLM generation] → final answer
+User → FastAPI → LangGraph → [authenticate → build metadata filter → Pinecone retrieval + BM25 retrieval → merge → Jina rerank → LLM generation (Groq)] → final answer
 
 ### Why this stack (the reasoning, not just the list)
 - **Hybrid retrieval (Pinecone + BM25)**: dense search catches semantic matches, BM25 catches exact keyword matches. Together they cover more of what users actually ask.

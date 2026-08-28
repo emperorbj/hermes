@@ -6,6 +6,16 @@ from pypdf import PdfReader
 PDF_CONTENT_TYPE = "application/pdf"
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+EXTENSION_TO_CONTENT_TYPE = {
+    ".pdf": PDF_CONTENT_TYPE,
+    ".docx": DOCX_CONTENT_TYPE,
+}
+
+
+def resolve_content_type(filename: str) -> str | None:
+    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return EXTENSION_TO_CONTENT_TYPE.get(suffix)
+
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     reader = PdfReader(BytesIO(file_bytes))

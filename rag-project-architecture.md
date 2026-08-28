@@ -36,11 +36,17 @@ Re-scores the merged candidate set from Pinecone (dense) and BM25 (lexical) to p
 ### Embeddings (Jina Embeddings API — free tier)
 Turns document chunks (at ingestion) and user queries (at retrieval) into the dense vectors stored in and queried against Pinecone. Uses the same Jina account/API key as the reranker, so no separate external service is introduced for this. Chosen over a self-hosted embedding model for the same reason as the reranker — avoids consuming CPU/RAM on the free-tier deployment host — and chosen over a paid provider like OpenAI to keep the project's free-tier-first design consistent.
 
+### LLM Generation (Groq API — free tier)
+Produces the final answer from the reranked context. Groq serves open-weight models (e.g. the Llama family) over an OpenAI-compatible API, running on their own inference hardware built for very low latency, with a free tier. Chosen over a paid provider (OpenAI, Anthropic) to keep the project's free-tier-first design consistent, and over self-hosting a model for the same reason reranking and embeddings are hosted rather than local — avoids consuming CPU/RAM/GPU on the free-tier deployment host.
+
 ### NeonDB (Postgres)
 Relational data store for everything that is not vector search: users, roles/permissions, document metadata, conversation records, and LangGraph checkpoint state (conversational memory). Chosen so that persistent state does not live on the replaceable compute host running Celery.
 
 ### Celery
 Handles asynchronous background processing — primarily the document ingestion pipeline (parse → chunk → embed → upsert to Pinecone → write metadata to NeonDB) triggered when an admin uploads a document, and the corresponding teardown (remove vectors from Pinecone, remove entries from the BM25 index, delete metadata from NeonDB) triggered when an admin deletes a document or knowledge base. Kept off the main request path so neither ingestion nor deletion blocks API responses.
+
+### Object Storage (Cloudflare R2 — free tier)
+Temporary holding area for an uploaded file's raw bytes between the moment FastAPI (on Render) receives it and the moment the Celery worker (on Oracle Cloud — a separate machine, no shared filesystem) actually processes it. The API uploads the file to R2 and passes only its object key to the Celery task (via Redis); the worker fetches the file by that key, processes it, then deletes it from R2 — nothing durable lives here, it's a hand-off buffer, not long-term storage. Chosen over passing raw file bytes directly through the Celery/Redis task queue to keep the message broker free of large binary payloads, and over AWS S3 for R2's free egress and generous free tier. S3-compatible, accessed via `boto3` pointed at R2's endpoint rather than a Cloudflare-specific SDK.
 
 ### Redis (Upstash — free tier)
 Message broker for Celery. Chosen for its free-tier allocation and standard Redis protocol compatibility, allowing it to be used as a drop-in Celery broker without hosting Redis separately. Also backs the application's three caching layers (embedding cache, retrieval cache, LLM response cache) — one Upstash instance serves both roles, separated by key prefix, rather than provisioning a second Redis instance.
@@ -124,8 +130,10 @@ Ragas answers "how good is the RAG system" through offline, dataset-driven evalu
 | rank_bm25 | Lexical/keyword search (in-process, no external service) |
 | Pinecone | Dense/semantic vector search, chunk metadata storage |
 | Jina Reranker API | Reranking merged hybrid search candidates |
+| Groq API | LLM answer generation from reranked context |
 | NeonDB (Postgres) | Users, roles, document metadata, conversations, LangGraph checkpoints |
 | Celery | Asynchronous document ingestion (parse, chunk, embed, store) |
+| Cloudflare R2 | Temporary file hand-off between API and Celery worker |
 | Redis (Upstash) | Celery message broker; embedding/retrieval/LLM response caches |
 | Docker | Containerization of API and worker |
 | Render | Hosts the FastAPI + LangGraph API service |
