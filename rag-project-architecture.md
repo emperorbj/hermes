@@ -60,11 +60,8 @@ Hosts the Dockerized FastAPI application (the API + LangGraph orchestration laye
 ### Oracle Cloud Always Free (Ampere A1)
 Hosts the Celery worker in Docker, since Render's free tier cannot run background workers. Provides 2 OCPUs and 12 GB RAM (as of 2026) — enough for a single worker process. Treated as *replaceable compute*: no important data is stored on the VM's local disk; everything durable lives in NeonDB and Pinecone. This avoids designing around Oracle's idle-instance reclamation policy — the worker is simply restarted/recreated from the Docker image if reclaimed, rather than kept alive artificially.
 
-### Ragas
-Offline evaluation framework for measuring RAG quality against a test dataset: faithfulness (is the answer supported by retrieved context), answer relevancy, context precision, context recall, and response correctness. Used in the development/testing workflow to compare pipeline changes, not in the live request path.
-
 ### LangSmith
-Tracing and observability tool. Used during development and operation to inspect what happened during a given request — query generation, metadata filters applied, Pinecone/BM25 results, reranker output, the exact prompt/context sent to the LLM, final answer, latency, token usage, and errors.
+Tracing and observability tool. Used during development and operation to inspect what happened during a given request — query generation, metadata filters applied, Pinecone/BM25 results, reranker output, the exact prompt/context sent to the LLM, final answer, latency, token usage, and errors. The project's sole observability/quality tool — see the note below on why Ragas was dropped.
 
 ---
 
@@ -115,8 +112,8 @@ The Celery worker host (Oracle Cloud) is intentionally treated as disposable com
 ### Single Worker to Start
 The project starts with one Celery worker (one Oracle VM), since the ingestion workload (admin document uploads) does not require horizontal scaling at this stage. Concurrency or additional workers are treated as a later optimization if ingestion volume grows.
 
-### Evaluation and Observability as Separate Concerns
-Ragas answers "how good is the RAG system" through offline, dataset-driven evaluation. LangSmith answers "what happened during this specific request" through tracing. Both are used together but serve distinct purposes — evaluation for measuring/improving quality over time, tracing for debugging and operational visibility.
+### Ragas Was Dropped — Confirmed Dependency Incompatibility, Not a Design Change
+Ragas was originally scoped for offline, dataset-driven quality evaluation (faithfulness, answer relevancy, context precision, context recall, response correctness) — a genuinely different concern from LangSmith's per-request tracing, and the two were never meant to be redundant. It was dropped after two different `ragas` releases (0.4.3 and 0.3.9) both failed at import time with the same root cause: `ragas` unconditionally imports `langchain_community.chat_models.vertexai`, a submodule no longer shipped in the `langchain_community` version this project depends on (removed as part of that package's ongoing sunset). Downgrading `langchain_community` to restore it risked breaking `JinaEmbeddings`, `JinaRerank`, and `BM25Retriever` — all live, working, and central to the pipeline — so that path wasn't taken. The real gap this leaves: there is currently no automated, dataset-level quality scoring in this project — only LangSmith's per-request tracing, which is not a substitute for measuring whether a pipeline change is actually an improvement. If this needs revisiting later, the options are the same three considered at the time: retry Ragas against a different `langchain_community` version, or hand-roll the same five metrics as direct LLM-as-judge prompts against the project's own Groq model, sidestepping the dependency entirely.
 
 ---
 
@@ -138,8 +135,7 @@ Ragas answers "how good is the RAG system" through offline, dataset-driven evalu
 | Docker | Containerization of API and worker |
 | Render | Hosts the FastAPI + LangGraph API service |
 | Oracle Cloud Always Free | Hosts the Celery worker (disposable compute) |
-| Ragas | Offline RAG quality evaluation |
-| LangSmith | Tracing and observability of live requests |
+| LangSmith | Tracing and observability of live requests (sole observability/quality tool — see note on Ragas above) |
 
 ---
 

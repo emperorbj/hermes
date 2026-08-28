@@ -39,8 +39,7 @@ We are building a **production-grade RAG (Retrieval-Augmented Generation) agent*
 - Groq API — LLM answer generation (free tier, OpenAI-compatible, serves open-weight models like Llama on low-latency inference hardware)
 
 **Observability & Evaluation**
-- LangSmith — per-request tracing/debugging ("what happened, and why?")
-- Ragas — offline batch evaluation of RAG quality ("how good is my system?") — metrics: faithfulness, answer relevancy, context precision, context recall, response correctness
+- LangSmith — per-request tracing/debugging ("what happened, and why?"). Sole observability/quality tool in this project — see "Why this stack" below for why Ragas was dropped.
 
 ### Request flow (conceptual)
 User → FastAPI → LangGraph → [authenticate → build metadata filter → Pinecone retrieval + BM25 retrieval → merge → Jina rerank → LLM generation (Groq)] → final answer
@@ -50,7 +49,7 @@ User → FastAPI → LangGraph → [authenticate → build metadata filter → P
 - **Reranking (Jina API)**: retrieval is deliberately over-inclusive (cast a wide net); reranking is the precision step that picks the best of what was retrieved before it's sent to the LLM.
 - **Free-tier-first design**: Render's free tier can't reasonably run both the API and a background worker (Celery) — it's too resource-constrained. So the worker is split off to Oracle Cloud Always Free, which gives a genuine standing compute allocation (2 OCPU/12GB), unlike Render's request-based free tier. Redis is hosted separately (Upstash) since it needs to be reachable from both Render and Oracle.
 - **Oracle Always Free caveats to remember**: instance creation can fail with "out of host capacity" in some regions (retry in different AD/region, or provision early); Oracle can reclaim instances idle for 7+ days (mitigate with a lightweight keep-alive/heartbeat task and monitoring).
-- **LangSmith vs Ragas are not redundant**: LangSmith is per-request tracing during development/debugging. Ragas is dataset-level, aggregate quality scoring used to decide whether a pipeline change is actually an improvement. One does not replace the other.
+- **Ragas was dropped, not deprioritized**: it was originally scoped alongside LangSmith (LangSmith = per-request tracing, Ragas = dataset-level quality scoring — genuinely different concerns, never meant to be redundant). Two different `ragas` releases (0.4.3, 0.3.9) both failed at import time on the same root cause: `ragas` unconditionally imports `langchain_community.chat_models.vertexai`, a submodule this project's `langchain_community` version no longer ships (removed during that package's sunset). Downgrading `langchain_community` to restore it risked breaking `JinaEmbeddings`/`JinaRerank`/`BM25Retriever` — all live and working — so that path wasn't taken. Net effect: there is currently no automated offline quality scoring in this project, only LangSmith's tracing. See `rag-project-architecture.md` for the full note and revisit options if this needs picking back up.
 
 ---
 

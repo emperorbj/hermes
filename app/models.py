@@ -23,6 +23,12 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class DocumentStatus(StrEnum):
+    PROCESSING = "processing"
+    READY = "ready"
+    FAILED = "failed"
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -30,6 +36,10 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String)
     content_type: Mapped[str] = mapped_column(String)
     size_bytes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[DocumentStatus] = mapped_column(
+        Enum(DocumentStatus, name="document_status", values_callable=lambda enum_cls: [item.value for item in enum_cls]),
+        default=DocumentStatus.PROCESSING,
+    )
     uploaded_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

@@ -5,17 +5,17 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_role
-from app.models import Chunk, Document, Role, User
+from app.models import Document, DocumentStatus, Role, User
 from app.schemas.documents import DeleteResponse, DocumentOut
-from app.services.chunking import chunk_text
-from app.services.embeddings import embed_texts
-from app.services.parsing import extract_text, resolve_content_type
-from app.services.vector_store import delete_document_vectors, upsert_chunks
+from app.services.parsing import resolve_content_type
+from app.services.storage import upload_file
+from app.services.vector_store import delete_document_vectors
+from app.tasks import process_document_task
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-@router.post("/upload", response_model=DocumentOut, status_code=201)
+@router.post("/upload", response_model=DocumentOut, status_code=202)
 async def upload_document(
     file: UploadFile = File(...),
     current_user: User = Depends(require_role(Role.ADMIN)),
@@ -36,25 +36,20 @@ async def upload_document(
     db.commit()
     db.refresh(document)
 
+    r2_key = f"uploads/{document.id}/{file.filename}"
     try:
-        text = extract_text(contents, content_type)
-        chunks = chunk_text(text)
-        embeddings = embed_texts(chunks)
-        for i, chunk in enumerate(chunks):
-            db.add(Chunk(document_id=document.id, chunk_index=i, text=chunk))
-        db.commit()
-
-        upsert_chunks(
+        upload_file(r2_key, contents)
+        process_document_task.delay(
             document_id=str(document.id),
+            r2_key=r2_key,
             filename=document.filename,
+            content_type=content_type,
             uploaded_by=str(current_user.id),
-            chunks=chunks,
-            embeddings=embeddings,
         )
     except Exception as exc:
-        db.delete(document)
+        document.status = DocumentStatus.FAILED
         db.commit()
-        raise HTTPException(status_code=500, detail="Failed to process document") from exc
+        raise HTTPException(status_code=500, detail="Failed to start document processing") from exc
 
     return document
 
