@@ -62,6 +62,18 @@ def list_documents(
     return db.query(Document).order_by(Document.uploaded_at.desc()).all()
 
 
+@router.get("/{document_id}", response_model=DocumentOut)
+def get_document(
+    document_id: uuid.UUID,
+    current_user: User = Depends(require_role(Role.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document
+
+
 @router.delete("/{document_id}", response_model=DeleteResponse)
 def delete_document(
     document_id: uuid.UUID,
